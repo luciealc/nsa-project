@@ -1,54 +1,67 @@
 # Next session — pick up here
 
-## Status: pfw-A complete, pfw-B pending
+## Status: SITE-TO-SITE IPSEC TUNNEL IS UP ✅
 
-## What's working on pfw-A (192.168.64.26 MGMT)
-- Three NICs: WAN (enp0s1) = 10.255.0.1, LAN (enp0s2) = 10.10.10.1, MGMT (enp0s3) DHCP
-- IP forwarding enabled + sysctl hardening
-- nftables: default-deny forward, stateful, SSH from MGMT, IPsec from WAN
-- NAT masquerade: siteA-lan -> MGMT (lab internet access for LAN VMs)
-- strongSwan (via charon-systemd): IKEv2 config for siteA-to-siteB tunnel
-  loaded and waiting for peer
-- Config files archived at configs/pfw-A/
+Both firewalls are built, connected, and carrying encrypted traffic between their LANs.
 
-## PSK
-- Stored in ~/cia-secrets/ipsec-psk.txt on the Mac
-- Stored in /etc/swanctl/conf.d/cia-site-to-site.secrets on pfw-A
-- Will need to match exactly on pfw-B
-- Target: migrate to Vault (tracked in ADR 004)
+## Current infrastructure state
+
+### pfw-A (Site A firewall)
+- MGMT IP: 192.168.64.26 (may shift, verify via `ip -4 addr show enp0s3`)
+- WAN (enp0s1): 10.255.0.1/24 on wan-sim
+- LAN (enp0s2): 10.10.10.1/24 on siteA-lan
+- nftables: default-deny + stateful + IPsec-aware + NAT masquerade
+- strongSwan (charon-systemd): siteA-to-siteB tunnel
+
+### pfw-B (Site B firewall)
+- MGMT IP: (verify on boot)
+- WAN (enp0s1): 10.255.0.2/24 on wan-sim
+- LAN (enp0s2): 10.20.10.1/24 on siteB-lan
+- Mirror of pfw-A's firewall + strongSwan config
+
+### VPN tunnel
+- IKEv2 with PSK auth (lab), AES-GCM-256, ECP-256 DH
+- Traffic selectors: 10.10.10.0/24 <-> 10.20.10.0/24
+- Comes up on first matching packet (start_action = trap)
+- Verified with ping 10.10.10.1 -> 10.20.10.1 crossing tunnel
+
+## Lessons learned this session
+- `strongswan-starter` package conflicts with `charon-systemd`; remove it
+- swanctl `.secrets` files are NOT included by default — inline `secrets {}`
+  block into the `.conf` file
+- Cloning VMs in UTM duplicates MAC addresses — enable "Regenerate MAC on clone"
+  or manually change MACs post-clone
+- `swanctl --list-secrets` doesn't exist; loaded secrets are visible only
+  via debug output or by successful authentication
 
 ## Next steps in priority order
 
-1. Build pfw-B (estimate 25-35 min)
-   - Clone ubuntu-golden in UTM -> pfw-B
-   - Attach NICs: wan-sim (WAN), siteB-lan (LAN), Shared Network (MGMT)
-   - Re-identify: hostname, machine-id, regen SSH host keys
-   - Netplan:
-     - enp0s1 = 10.255.0.2/24 (WAN)
-     - enp0s2 = 10.20.10.1/24 (LAN)
-     - enp0s3 = DHCP (MGMT)
-   - Sysctl: enable forwarding + hardening
-   - nftables: mirror of pfw-A with A<->B swapped
-   - Install strongswan + charon-systemd
-   - Copy configs/pfw-B/etc/swanctl/conf.d/*.conf from repo
-   - Create /etc/swanctl/conf.d/cia-site-to-site.secrets with matching PSK
-   - swanctl --load-all
+1. **First internal VM on Site A**: create `svc-A` (Vault + NetBox)
+   - Clone ubuntu-golden -> svc-A
+   - Attach to: siteA-lan (eth0), Shared Network (MGMT)
+   - Static IP on LAN: 10.10.10.10/24 (management subnet service range)
+   - Default route via pfw-A LAN interface (10.10.10.1)
+   - Re-identify (hostname, machine-id, ssh host keys)
 
-2. Test the tunnel
-   - From pfw-A: `swanctl --initiate --child lan-to-lan` (or send a packet
-     from LAN that matches the selector)
-   - `swanctl --list-sas` should show an established SA on both sides
-   - ping from 10.10.10.1 (pfw-A LAN) to 10.20.10.1 (pfw-B LAN) should work
+2. **First internal VM on Site B**: create `bastion-B`
+   - Same pattern as svc-A
+   - Attach to siteB-lan + Shared Network (MGMT)
+   - Static IP on LAN: 10.20.40.10/24 (per plan, subnet may differ)
 
-3. Add first internal VM (Site A Vault+NetBox VM) so traffic can cross
-   the tunnel from a "real" LAN host
+3. **Verify cross-site reachability from LAN VMs**
+   - From svc-A, ping bastion-B's LAN IP (should traverse tunnel)
 
-4. Start Ansible-ifying what we built manually
-   - Inventory with pfw-A, pfw-B, and future VMs on MGMT IPs
+4. **Start introducing Ansible**
+   - Inventory with pfw-A, pfw-B, svc-A, bastion-B
    - Roles: baseline, nftables-firewall, strongswan-peer
+   - Retrofit existing manual config into idempotent playbooks
 
-## Known issues / caveats
-- UTM network "wan-sim" is labeled "Network 2" in UTM UI (rename bug)
-- Ubuntu 24.04 ARM: use `charon-systemd` package, not `strongswan-starter`
-- Shared Network DHCP: MGMT IPs may change between boots; rely on them
-  staying fairly stable, but verify after each boot
+5. **Emergency kill-switch**
+   - Ansible ad-hoc command to drop the tunnel
+   - Documented recovery procedure
+
+## PSK
+- Real value in ~/cia-secrets/ipsec-psk.txt (Mac)
+- Deployed inline in /etc/swanctl/conf.d/cia-site-to-site.conf on both pfw's
+- Redacted in configs/ before git commit
+- TODO: migrate to Vault once svc-A is built
