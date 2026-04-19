@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CIA Internal Site — Site B</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 4em auto; padding: 0 1.5em; color: #222; }
+h1 { color: #0b5; }
+.box { background: #f4f4f4; padding: 1em 1.5em; border-radius: 6px; margin: 1em 0; }
+code { background: #eaeaea; padding: 0.1em 0.4em; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>🔒 Internal Site — Site B</h1>
+<p>If you're reading this, you successfully reached <code>app-B</code>
+from inside the hybrid infrastructure.</p>
+
+<div class="box">
+<p><strong>Server:</strong> app-B (10.20.10.20)</p>
+<p><strong>Site:</strong> Site B (siteB-lan 10.20.10.0/24)</p>
+<p><strong>Access requirements:</strong></p>
+<ul>
+<li>Requests from Site A traverse the IPsec tunnel via pfw-B</li>
+<li>Requests from outside Site A/B must pass through the bastion</li>
+<li>Direct internet access to this page is blocked by firewall policy</li>
+</ul>
+</div>
+
+<p><em>This page proves the hybrid infrastructure's segmentation works:
+Site A users can reach it through the tunnel; the internet cannot.</em></p>
+</body>
+</html>

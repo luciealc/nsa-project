@@ -1,58 +1,69 @@
 # Next session — pick up here
 
-## Status: Firewalls + IPsec + Bastion all working ✅
+## Status: Core infrastructure + internal website working
 
-End-to-end admin flow proven: Mac -> bastion-B -> pfw-A via tunnel.
+Foundation is solid. Every path tested in an integration run passed.
 
-## Current VM state (MGMT IPs shift with DHCP, verify on boot)
+## Current VMs
 
-| VM | LAN IP | Role |
-|---|---|---|
-| pfw-A | 10.10.10.1 (LAN), 10.255.0.1 (WAN) | Site A firewall + IPsec peer |
-| pfw-B | 10.20.10.1 (LAN), 10.255.0.2 (WAN) | Site B firewall + IPsec peer |
-| bastion-B | 10.20.10.10 (LAN) | SSH entry point to Site B |
+| VM | LAN IP | MGMT IP (DHCP) | Role |
+|---|---|---|---|
+| pfw-A | 10.10.10.1 / 10.255.0.1 | 192.168.64.26 | Firewall + IPsec peer |
+| pfw-B | 10.20.10.1 / 10.255.0.2 | 192.168.64.28 | Firewall + IPsec peer |
+| bastion-B | 10.20.10.10 | 192.168.64.29 | SSH jump host |
+| app-B | 10.20.10.20 | 192.168.64.30 | nginx + PostgreSQL |
 
-All on Shared Network (UTM) for MGMT.
+MGMT IPs may shift between reboots; verify if SSH fails.
 
-## Tunnel
-- IKEv2, AES-GCM-256, ECP-256, SHA2-384
-- Traffic selectors 10.10.10.0/24 <-> 10.20.10.0/24
-- On-demand (trap), DPD restart on failure
+## Proven working
 
-## Next steps in priority
+- Mac -> each VM via MGMT SSH
+- pfw-A <-> pfw-B IPsec tunnel (IKEv2, AES-GCM-256)
+- pfw-A LAN -> all Site B LAN hosts via tunnel
+- bastion -> pfw-A SSH (via tunnel)
+- Site A LAN -> app-B HTTP (via tunnel)
 
-1. **app-B (Site B app + DB + internal website)** — 10.20.10.20
-   - Nginx + static or minimal dynamic site
-   - Accessible from Site A users only (firewall-enforced)
-   - Satisfies spec's "internal website" deliverable
+## Next steps, priority order
 
-2. **svc-A (Site A services: NetBox + Vault)** — 10.10.10.20
-   - Vault to hold the IPsec PSK (migrate from local file)
-   - NetBox as the IP-plan source of truth
+1. svc-A (Site A services: NetBox + Vault) — 10.10.10.20
+   - Clone golden, attach to siteA-lan + Shared
+   - Install Vault (single-node lab config)
+   - Install NetBox (PostgreSQL, Redis, nginx, gunicorn)
+   - Initialize Vault, store the IPsec PSK as a secret
+   - Populate NetBox with the IP plan via its API
+   - Add static route: 10.20.10.0/24 via 10.10.10.1
 
-3. **elk-A (Site A observability)** — 10.10.10.30
-   - Heaviest VM (~4 GB); Elasticsearch, Kibana, Logstash
-   - Ship pfw-A, pfw-B, bastion-B, all-VM syslog here
+2. elk-A (Site A observability) — 10.10.10.30
+   - 4 GB RAM allocation
+   - Elasticsearch, Kibana, Logstash
+   - Forward pfw-A, pfw-B, bastion-B, app-B syslog to Logstash
+   - Basic Kibana dashboards: firewall drops, SSH auth, web access
 
-4. **DNS forwarding**
-   - Unbound on pfw-A and pfw-B, forwarding *.siteb.cia.lab <-> *.sitea.cia.lab
+3. DNS forwarding between sites (per spec)
+   - Unbound on pfw-A and pfw-B
+   - pfw-A resolves *.siteb.cia.lab via pfw-B (and vice versa)
+   - Each pfw serves DNS to its own LAN
 
-5. **Ansible**
-   - Inventory, roles, retrofit all manual config to idempotent playbooks
+4. Tighten firewall rules on pfw-B
+   - Explicit drop of inbound WAN traffic targeting 10.20.10.20:80
+   - Documented proof that the internet cannot reach app-B
 
-## Quick start next session
+5. Ansible migration
+   - Inventory with all VMs
+   - Roles: baseline, firewall, strongswan-peer, nginx-app, bastion-hardening
+   - Retrofit existing manual config into idempotent playbooks
 
-```bash
-# Bring the lab up
-# In UTM, start (in order): pfw-A, pfw-B, bastion-B
-# Then from Mac:
-ssh cia@<pfw-A-mgmt-ip>
-sudo swanctl --list-sas           # should show tunnel up after first packet
-```
+## Known gotchas for pickup
 
-If tunnel doesn't auto-establish, trigger it:
+- UTM cloning doesn't regenerate MACs by default; manual change required
+- strongswan-starter conflicts with charon-systemd; remove it
+- swanctl .secrets files aren't auto-included; inline secrets into .conf
+- Site B VMs need explicit static route 10.10.10.0/24 via 10.20.10.1 or
+  rp_filter silently drops inbound tunnel traffic (ADR 006)
+- MGMT plane IPs shift on DHCP renewal
 
-```bash
-# From pfw-A
-sudo swanctl --initiate --child lan-to-lan
-```
+## PSK
+
+Still in `~/cia-secrets/ipsec-psk.txt` on the Mac and inline in each pfw's
+`/etc/swanctl/conf.d/cia-site-to-site.conf`. Redacted in committed configs.
+Migration to Vault is step 1 of next session.
