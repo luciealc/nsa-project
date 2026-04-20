@@ -1,69 +1,86 @@
 # Next session — pick up here
 
-## Status: Core infrastructure + internal website working
+## Status: Vault + NetBox live, IPAM populated
 
-Foundation is solid. Every path tested in an integration run passed.
+svc-A is running both Vault (secrets) and NetBox (IPAM). The full IP plan
+and device inventory are now stored in NetBox as the source of truth.
 
-## Current VMs
+## VM inventory
 
-| VM | LAN IP | MGMT IP (DHCP) | Role |
+| VM | LAN IP | MGMT IP | Role |
 |---|---|---|---|
 | pfw-A | 10.10.10.1 / 10.255.0.1 | 192.168.64.26 | Firewall + IPsec peer |
 | pfw-B | 10.20.10.1 / 10.255.0.2 | 192.168.64.28 | Firewall + IPsec peer |
 | bastion-B | 10.20.10.10 | 192.168.64.29 | SSH jump host |
-| app-B | 10.20.10.20 | 192.168.64.30 | nginx + PostgreSQL |
+| app-B | 10.20.10.20 | 192.168.64.30 | nginx + internal website |
+| svc-A | 10.10.10.20 | 192.168.64.29 | Vault + NetBox |
 
-MGMT IPs may shift between reboots; verify if SSH fails.
+(Note: MGMT IPs may have shifted; verify on boot)
 
-## Proven working
+## What's in Vault (at path `cia/`)
 
-- Mac -> each VM via MGMT SSH
-- pfw-A <-> pfw-B IPsec tunnel (IKEv2, AES-GCM-256)
-- pfw-A LAN -> all Site B LAN hosts via tunnel
-- bastion -> pfw-A SSH (via tunnel)
-- Site A LAN -> app-B HTTP (via tunnel)
+- `cia/ipsec/site-to-site` — IPsec PSK
+- `cia/netbox/db` — DB creds
+- `cia/netbox/app` — Django SECRET_KEY
+- `cia/netbox/admin` — admin password
+- `cia/netbox/pepper` — API token pepper
+- `cia/netbox/api` — current API token (v2 format: `nbt_<key>.<plaintext>`)
+
+## What's in NetBox (populated via scripts/populate_netbox.sh)
+
+- 2 sites (Site A, Site B)
+- 4 prefixes (siteA-lan, siteB-lan, wan-sim, mgmt)
+- 4 device roles (Firewall, Bastion, App Server, Services)
+- 5 devices (pfw-A, pfw-B, bastion-B, app-B, svc-A)
+- 7 IP addresses
+
+## Access NetBox UI
+
+SSH tunnel from Mac:
+
+    ssh -L 8080:10.10.10.20:80 cia@<svc-A-mgmt-ip>
+
+Then browser: http://localhost:8080
+Credentials: admin / stored in Vault at cia/netbox/admin
+
+## Vault unseal after reboot
+
+Vault seals on reboot — this is by design. To unseal:
+
+    ssh cia@<svc-A-mgmt-ip>
+    export VAULT_ADDR='http://127.0.0.1:8200'
+    vault operator unseal   # repeat 3 times, different keys each time
+
+Unseal keys in ~/cia-secrets/vault-init.txt on operator Mac.
 
 ## Next steps, priority order
 
-1. svc-A (Site A services: NetBox + Vault) — 10.10.10.20
-   - Clone golden, attach to siteA-lan + Shared
-   - Install Vault (single-node lab config)
-   - Install NetBox (PostgreSQL, Redis, nginx, gunicorn)
-   - Initialize Vault, store the IPsec PSK as a secret
-   - Populate NetBox with the IP plan via its API
-   - Add static route: 10.20.10.0/24 via 10.10.10.1
+1. **elk-A (Site A observability)** — 10.10.10.30
+   - Elasticsearch + Kibana + Logstash on its own VM (4 GB RAM)
+   - Forward syslog from pfw-A, pfw-B, bastion-B, app-B, svc-A
+   - Basic Kibana dashboards: firewall drops, SSH auth, HTTP access
 
-2. elk-A (Site A observability) — 10.10.10.30
-   - 4 GB RAM allocation
-   - Elasticsearch, Kibana, Logstash
-   - Forward pfw-A, pfw-B, bastion-B, app-B syslog to Logstash
-   - Basic Kibana dashboards: firewall drops, SSH auth, web access
-
-3. DNS forwarding between sites (per spec)
+2. **DNS forwarding between sites** (per spec)
    - Unbound on pfw-A and pfw-B
    - pfw-A resolves *.siteb.cia.lab via pfw-B (and vice versa)
-   - Each pfw serves DNS to its own LAN
 
-4. Tighten firewall rules on pfw-B
-   - Explicit drop of inbound WAN traffic targeting 10.20.10.20:80
-   - Documented proof that the internet cannot reach app-B
+3. **Migrate IPsec PSK retrieval to Vault**
+   - pfw-A/pfw-B currently have the PSK inlined in /etc/swanctl/conf.d/*.conf
+   - Target: Ansible task that retrieves from Vault at deploy time
 
-5. Ansible migration
+4. **Ansible migration**
    - Inventory with all VMs
-   - Roles: baseline, firewall, strongswan-peer, nginx-app, bastion-hardening
-   - Retrofit existing manual config into idempotent playbooks
+   - Roles: baseline, firewall, strongswan-peer, nginx-app, bastion, netbox-client, vault-client
 
-## Known gotchas for pickup
+5. **Tighten pfw-A firewall for svc-A access from Site B**
+   - Currently no Site B host can reach Vault or NetBox on svc-A
+   - Add rules for known bastion/app IPs if needed for Ansible
 
-- UTM cloning doesn't regenerate MACs by default; manual change required
-- strongswan-starter conflicts with charon-systemd; remove it
-- swanctl .secrets files aren't auto-included; inline secrets into .conf
-- Site B VMs need explicit static route 10.10.10.0/24 via 10.20.10.1 or
-  rp_filter silently drops inbound tunnel traffic (ADR 006)
-- MGMT plane IPs shift on DHCP renewal
+## Known gotchas
 
-## PSK
-
-Still in `~/cia-secrets/ipsec-psk.txt` on the Mac and inline in each pfw's
-`/etc/swanctl/conf.d/cia-site-to-site.conf`. Redacted in committed configs.
-Migration to Vault is step 1 of next session.
+- NetBox 4.3+ requires API_TOKEN_PEPPERS as a dict `{0: 'long_string_>=50_chars'}`
+- NetBox v2 tokens use `Bearer nbt_<key>.<plaintext>` — NOT `Token`
+- Vault CLI needs VAULT_ADDR=http://127.0.0.1:8200 (export in ~/.bashrc on svc-A)
+- strongswan-starter package conflicts with charon-systemd; always remove it
+- Site B VMs need static route `10.10.10.0/24 via 10.20.10.1` (ADR 006)
+- MGMT plane IPs shift on DHCP renewal between boots

@@ -1,0 +1,22 @@
+server {
+    listen 80;
+    server_name svc-a.cia.lab 10.10.10.20 localhost;
+
+    # CIA lab: TLS deliberately omitted; intent is to add with internal CA.
+    # Traffic to NetBox from Site B hosts traverses the IPsec tunnel, so
+    # it is already encrypted in transit on the untrusted segment.
+
+    client_max_body_size 25m;
+
+    location /static/ {
+        alias /opt/netbox/netbox/static/;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
